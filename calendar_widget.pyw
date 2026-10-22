@@ -201,6 +201,7 @@ class Widget:
     style_file = STYLE_FILE
     size = ""
     min_size = (240, 170)
+    calendar = True  # False면 ICS 갱신 루프와 캘린더 메뉴 항목을 쓰지 않는다
 
     def default_pos(self):
         return self.root.winfo_screenwidth() - 320, self.root.winfo_screenheight() - 520
@@ -221,7 +222,8 @@ class Widget:
         self.body.pack(fill="both", expand=True)
         self.menu = tk.Menu(self.root, tearoff=0, bg=T["card"], fg=T["fg"], activebackground=T["sec"],
                             activeforeground=T["fg"], selectcolor=T["primary"], font=(FONT, 11), bd=0)
-        self.menu.add_command(label="캘린더 주소 설정…", command=self.open_settings)
+        if self.calendar:
+            self.menu.add_command(label="캘린더 주소 설정…", command=self.open_settings)
         self.pinned = tk.BooleanVar(value=self.pin_file.exists() and self.pin_file.read_text().strip() == "1")
         self.menu.add_checkbutton(label="바탕화면에 고정", variable=self.pinned, command=self.toggle_pin)
         self.alpha_var = tk.DoubleVar(value=self.alpha)
@@ -235,8 +237,9 @@ class Widget:
             size_menu.add_radiobutton(label=name, variable=self.offset_var, value=offset, command=self.set_style)
         self.menu.add_cascade(label="투명도", menu=alpha_menu)
         self.menu.add_cascade(label="글씨 크기", menu=size_menu)
-        self.menu.add_command(label="지금 새로고침", command=self.refresh_now)
-        self.menu.add_command(label="구글 캘린더 열기", command=lambda: webbrowser.open("https://calendar.google.com"))
+        if self.calendar:
+            self.menu.add_command(label="지금 새로고침", command=self.refresh_now)
+            self.menu.add_command(label="구글 캘린더 열기", command=lambda: webbrowser.open("https://calendar.google.com"))
         self.menu.add_command(label="종료", command=self.root.destroy)
         self.root.bind_all("<ButtonPress-1>", self.drag_start)
         self.root.bind_all("<B1-Motion>", self.drag_move)
@@ -438,7 +441,8 @@ class Widget:
 
     def run(self):
         self.render()
-        self.loop()
+        if self.calendar:
+            self.loop()
         self.pin_loop()
         self.root.mainloop()
 
