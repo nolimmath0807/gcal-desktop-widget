@@ -3,9 +3,11 @@ import argparse
 import ctypes
 import threading
 import tkinter as tk
+import tkinter.font as tkfont
 import tkinter.messagebox
 import urllib.request
 import webbrowser
+import winreg
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -21,8 +23,24 @@ PIN_FILE = HERE / "widget_pin.txt"
 DAYS = 7
 REFRESH_MS = 5 * 60 * 1000
 WEEKDAYS = "월화수목금토일"
-FONT = "맑은 고딕"
-BG = "#1e1e1e"
+FONT = "맑은 고딕"  # Tk를 띄운 뒤 pick_font()가 Pretendard로 바꾼다
+# 토스풍 색 토큰 (ui-guide-toss-shadcn.md 4장). hover는 카드 호버 면, press는 버튼 호버 면, faint는 다른 달 날짜.
+LIGHT = dict(bg="#F2F4F6", card="#FFFFFF", fg="#191F28", muted="#8B95A1", faint="#C5CCD3",
+             sec="#F2F4F6", sec_fg="#4E5968", hover="#F9FAFB", press="#E5E8EB", line="#E5E8EB",
+             primary="#3182F6", tint="#E8F3FF", tint_fg="#3182F6", red="#F04452", green="#03B26C")
+DARK = dict(bg="#17171C", card="#202027", fg="#E4E4E5", muted="#9E9EA4", faint="#55555C",
+            sec="#2C2C35", sec_fg="#C3C3C6", hover="#27272F", press="#3A3A45", line="#2C2C35",
+            primary="#3182F6", tint="#1E2A3D", tint_fg="#64A8FF", red="#F04452", green="#03B26C")
+
+
+def system_theme():
+    """Windows 앱 테마(AppsUseLightTheme)에 맞는 색 토큰."""
+    path = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, path) as key:
+        return LIGHT if winreg.QueryValueEx(key, "AppsUseLightTheme")[0] else DARK
+
+
+T = system_theme()
 
 
 def to_local(value):
@@ -91,11 +109,74 @@ def restore_geometry(text, size):
     return f"{size}+{x}+{y}"
 
 
+def root_hwnd(root):
+    """overrideredirect 창이라 Tk 내부 창의 최상위 창을 찾는다."""
+    return ctypes.windll.user32.GetAncestor(root.winfo_id(), 2) or root.winfo_id()  # GA_ROOT
+
+
 def pin_to_bottom(root):
-    """창을 Z순서 맨 아래(HWND_BOTTOM)로 보낸다. overrideredirect 창이라 Tk 내부 창의 최상위 창을 찾는다."""
-    user32 = ctypes.windll.user32
-    hwnd = user32.GetAncestor(root.winfo_id(), 2) or root.winfo_id()  # GA_ROOT
-    user32.SetWindowPos(hwnd, 1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)  # HWND_BOTTOM, SWP_NOSIZE|NOMOVE|NOACTIVATE
+    """창을 Z순서 맨 아래(HWND_BOTTOM)로 보낸다."""
+    ctypes.windll.user32.SetWindowPos(root_hwnd(root), 1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)  # HWND_BOTTOM, SWP_NOSIZE|NOMOVE|NOACTIVATE
+
+
+def round_window(root):
+    """Windows 11 창 모서리를 둥글게 (DWMWA_WINDOW_CORNER_PREFERENCE=33, DWMWCP_ROUND=2)."""
+    root.update_idletasks()
+    ctypes.windll.dwmapi.DwmSetWindowAttribute(root_hwnd(root), 33, ctypes.byref(ctypes.c_int(2)), 4)
+
+
+def pick_font():
+    return "Pretendard" if "Pretendard" in tkfont.families() else "맑은 고딕"
+
+
+def walk(widget):
+    yield widget
+    for child in widget.winfo_children():
+        yield from walk(child)
+
+
+def round_corners(widget, r, outer):
+    """widget 네 모서리에 바깥 색 조각을 얹어 둥글게 보이게 한다 (안쪽 원은 widget 면 색, 태그 face)."""
+    inner = widget.cget("bg")
+    # Frame은 padx/pady 안쪽 기준으로 place 되므로 그만큼 밖으로 민다
+    px, py = (int(widget.cget("padx")), int(widget.cget("pady"))) if isinstance(widget, tk.Frame) else (0, 0)
+    corners = (("nw", 0, 0, (0, 0, 2 * r, 2 * r)), ("ne", 1, 0, (-r, 0, r, 2 * r)),
+               ("sw", 0, 1, (0, -r, 2 * r, r)), ("se", 1, 1, (-r, -r, r, r)))
+    for anchor, relx, rely, box in corners:
+        c = tk.Canvas(widget, width=r, height=r, bg=outer, highlightthickness=0, bd=0)
+        c.create_oval(*box, fill=inner, outline=inner, tags="face")
+        c.on_click = getattr(widget, "on_click", None)
+        c.place(relx=relx, rely=rely, x=px if relx else -px, y=py if rely else -py, anchor=anchor)
+
+
+def paint(widget, old, new):
+    """widget 아래에서 old 색인 면을 new 색으로 바꾼다 (호버용)."""
+    for w in walk(widget):
+        if w.cget("bg") == old:
+            w.configure(bg=new)
+        if isinstance(w, tk.Canvas) and w.find_withtag("face") and w.itemcget("face", "fill") == old:
+            w.itemconfigure("face", fill=new, outline=new)
+
+
+def hoverable(widget, normal, hot):
+    for w in walk(widget):
+        w.bind("<Enter>", lambda e: paint(widget, normal, hot), add="+")
+        w.bind("<Leave>", lambda e: paint(widget, hot, normal), add="+")
+
+
+def card(parent, r=12, padx=14, pady=12):
+    """회색 바탕 위 흰 카드 (테두리·그림자 없음). 모서리는 내용을 다 넣은 뒤 round_corners로 얹는다."""
+    return tk.Frame(parent, bg=T["card"], padx=padx, pady=pady)
+
+
+def button(parent, text, command, primary):
+    face, fg, hot = (T["primary"], "#FFFFFF", "#1B64DA") if primary else (T["sec"], T["sec_fg"], T["press"])
+    widget = tk.Button(parent, text=text, command=command, font=(FONT, 10, "bold"), bg=face, fg=fg,
+                       activebackground=hot, activeforeground=fg, relief="flat", bd=0, padx=18, pady=7,
+                       cursor="hand2")
+    widget.bind("<Enter>", lambda e: widget.configure(bg=hot))
+    widget.bind("<Leave>", lambda e: widget.configure(bg=face))
+    return widget
 
 
 class Widget:
@@ -108,17 +189,20 @@ class Widget:
         return self.root.winfo_screenwidth() - 320, self.root.winfo_screenheight() - 520
 
     def __init__(self):
+        global FONT
         self.root = tk.Tk()
+        FONT = pick_font()
         self.root.overrideredirect(True)
-        self.root.attributes("-alpha", 0.85)
-        self.root.configure(bg=BG)
+        self.root.attributes("-alpha", 0.95)
+        self.root.configure(bg=T["bg"])
         self.texts = []
         self.status = ""
         self.hint = None
         self.dialog = None
-        self.body = tk.Frame(self.root, bg=BG, padx=12, pady=10)
+        self.body = tk.Frame(self.root, bg=T["bg"], padx=12, pady=12)
         self.body.pack(fill="both", expand=True)
-        self.menu = tk.Menu(self.root, tearoff=0)
+        self.menu = tk.Menu(self.root, tearoff=0, bg=T["card"], fg=T["fg"], activebackground=T["sec"],
+                            activeforeground=T["fg"], selectcolor=T["primary"], font=(FONT, 10), bd=0)
         self.menu.add_command(label="캘린더 주소 설정…", command=self.open_settings)
         self.pinned = tk.BooleanVar(value=self.pin_file.exists() and self.pin_file.read_text().strip() == "1")
         self.menu.add_checkbutton(label="바탕화면에 고정", variable=self.pinned, command=self.toggle_pin)
@@ -136,8 +220,9 @@ class Widget:
             geometry = f"{self.size}+{x}+{y}"
         self.size = geometry.split("+")[0]
         self.root.geometry(geometry)
+        round_window(self.root)
         self.resizing = None
-        self.grip = tk.Label(self.root, text="◢", bg=BG, fg="#888888", font=(FONT, 10), cursor="size_nw_se")
+        self.grip = tk.Label(self.root, text="◢", bg=T["bg"], fg=T["muted"], font=(FONT, 10), cursor="size_nw_se")
         self.show_grip()
         self.root.bind("<FocusIn>", lambda e: self.keep_pinned())
 
@@ -200,21 +285,26 @@ class Widget:
             self.dialog.lift()
             self.dialog.focus_force()
             return
-        self.dialog = tk.Toplevel(self.root)
+        self.dialog = tk.Toplevel(self.root, bg=T["card"], padx=10, pady=8)
         self.dialog.title("캘린더 주소 설정")
         self.dialog.attributes("-topmost", True)
         self.dialog.protocol("WM_DELETE_WINDOW", self.close_settings)
         guide = ("구글 캘린더 → 설정 → 왼쪽에서 캘린더 선택 →\n"
                  "\"iCal 형식의 비공개 주소\"를 복사해 붙여 넣어 주세요.\n"
                  "캘린더가 여러 개면 한 줄에 주소 하나씩 넣으면 됩니다.")
-        tk.Label(self.dialog, text=guide, font=(FONT, 10), justify="left").pack(anchor="w", padx=12, pady=(12, 6))
-        self.url_box = tk.Text(self.dialog, width=70, height=6, font=(FONT, 9))
+        tk.Label(self.dialog, text="캘린더 주소 설정", bg=T["card"], fg=T["fg"],
+                 font=(FONT, 14, "bold")).pack(anchor="w", padx=12, pady=(12, 4))
+        tk.Label(self.dialog, text=guide, bg=T["card"], fg=T["muted"], font=(FONT, 10),
+                 justify="left").pack(anchor="w", padx=12, pady=(0, 10))
+        self.url_box = tk.Text(self.dialog, width=70, height=6, font=(FONT, 9), bg=T["sec"], fg=T["fg"],
+                               insertbackground=T["fg"], selectbackground=T["primary"], relief="flat", bd=0,
+                               highlightthickness=0, padx=10, pady=8)
         self.url_box.pack(fill="both", expand=True, padx=12)
         self.url_box.insert("1.0", "\n".join(read_urls()))
-        buttons = tk.Frame(self.dialog)
+        buttons = tk.Frame(self.dialog, bg=T["card"])
         buttons.pack(anchor="e", padx=12, pady=12)
-        tk.Button(buttons, text="저장", width=8, command=self.save_settings).pack(side="left", padx=(0, 6))
-        tk.Button(buttons, text="취소", width=8, command=self.close_settings).pack(side="left")
+        button(buttons, "취소", self.close_settings, False).pack(side="left", padx=(0, 6))
+        button(buttons, "저장", self.save_settings, True).pack(side="left")
         self.dialog.focus_force()
         self.url_box.focus_set()
 
@@ -232,12 +322,15 @@ class Widget:
         self.dialog.destroy()
         self.dialog = None
 
-    def label(self, text, size=10, color="#e8e8e8", bold=False, pady=0):
+    def label(self, text, size=10, color=None, bold=False, pady=0):
         weight = "bold" if bold else "normal"
-        widget = tk.Label(self.body, text=text, bg=BG, fg=color, font=(FONT, size, weight),
-                          anchor="w", justify="left", wraplength=self.wrap())
+        widget = tk.Label(self.body, text=text, bg=T["bg"], fg=color or T["fg"], font=(FONT, size, weight),
+                          anchor="w", justify="left", wraplength=self.wrap(), bd=0)
         widget.pack(fill="x", pady=(pady, 0))
         return widget
+
+    def status_color(self):
+        return T["red"] if self.status.startswith("갱신 실패") else T["muted"]
 
     def wrap(self):
         return max(int(self.size.split("x")[0]) - 40, 100) if self.size else 260
@@ -247,16 +340,36 @@ class Widget:
             child.destroy()
         now = datetime.now(KST)
         if not read_urls():
-            self.hint = self.label("캘린더 주소가 없어요. 여기를 눌러 넣어 주세요", color="#ffcc66")
+            self.hint = self.label("캘린더 주소가 없어요. 여기를 눌러 넣어 주세요", color=T["primary"], bold=True)
             return
         groups = group_events(self.texts, now)
         if not groups:
-            self.label("7일간 일정 없음", color="#aaaaaa")
+            self.label("7일간 일정 없음", color=T["muted"])
+        time_font = tkfont.Font(font=(FONT, 9))
+        time_w = time_font.measure("00:00") + 12
+        title_w = max(self.wrap() - 28 - time_w, 80)
         for d, items in groups:
-            self.label(day_label(d, now.date()), size=10, color="#8ab4f8", bold=True, pady=6)
-            for item in items:
-                self.label(f"{item['time']}  {item['title']}", color="#666666" if item["past"] else "#e8e8e8")
-        self.label(self.status, size=8, color="#888888", pady=8)
+            box = card(self.body)
+            box.pack(fill="x", pady=(0, 8))
+            box.columnconfigure(0, minsize=time_w)
+            box.columnconfigure(1, weight=1)
+            head = tk.Frame(box, bg=T["card"])
+            head.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
+            tk.Label(head, text=day_label(d, None), bg=T["card"], fg=T["fg"], font=(FONT, 11, "bold"),
+                     bd=0).pack(side="left")
+            if d == now.date():
+                badge = tk.Label(head, text="오늘", bg=T["tint"], fg=T["tint_fg"], font=(FONT, 8, "bold"),
+                                 bd=0, padx=7, pady=1)
+                badge.pack(side="left", padx=(6, 0))
+                round_corners(badge, 4, T["card"])
+            for row, item in enumerate(items, start=1):
+                color = T["muted"] if item["past"] else T["fg"]
+                tk.Label(box, text=item["time"], bg=T["card"], fg=T["muted"], font=time_font,
+                         bd=0, anchor="w").grid(row=row, column=0, sticky="nw", pady=2)
+                tk.Label(box, text=item["title"], bg=T["card"], fg=color, font=(FONT, 10), bd=0, anchor="w",
+                         justify="left", wraplength=title_w).grid(row=row, column=1, sticky="w", pady=2)
+            round_corners(box, 12, T["bg"])
+        self.label(self.status, size=8, color=self.status_color(), pady=2)
 
     def refresh_now(self):
         urls = read_urls()
