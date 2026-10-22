@@ -20,6 +20,10 @@ HERE = Path(__file__).resolve().parent
 URL_FILE = HERE / "ics_url.txt"
 POS_FILE = HERE / "widget_pos.txt"
 PIN_FILE = HERE / "widget_pin.txt"
+STYLE_FILE = HERE / "widget_style.txt"
+ALPHAS = (1.0, 0.95, 0.9, 0.85, 0.8, 0.7)
+FONT_SIZES = (("작게", -2), ("보통", 0), ("크게", 2), ("아주 크게", 4))  # (메뉴 이름, 글씨 크기 더하기 pt)
+DEFAULT_STYLE = (1.0, 0)  # 불투명, 보통 크기
 DAYS = 7
 REFRESH_MS = 5 * 60 * 1000
 WEEKDAYS = "월화수목금토일"
@@ -109,6 +113,18 @@ def restore_geometry(text, size):
     return f"{size}+{x}+{y}"
 
 
+def parse_style(text):
+    """스타일 파일 내용 "<alpha> <offset>" -> (alpha, offset). 비었거나 깨졌거나 메뉴에 없는 값이면 기본값."""
+    try:
+        a, o = text.split()
+        alpha, offset = float(a), int(o)
+    except ValueError:
+        return DEFAULT_STYLE
+    if alpha in ALPHAS and offset in dict(FONT_SIZES).values():
+        return alpha, offset
+    return DEFAULT_STYLE
+
+
 def root_hwnd(root):
     """overrideredirect 창이라 Tk 내부 창의 최상위 창을 찾는다."""
     return ctypes.windll.user32.GetAncestor(root.winfo_id(), 2) or root.winfo_id()  # GA_ROOT
@@ -169,9 +185,9 @@ def card(parent, r=12, padx=14, pady=12):
     return tk.Frame(parent, bg=T["card"], padx=padx, pady=pady)
 
 
-def button(parent, text, command, primary):
+def button(parent, text, command, primary, font):
     face, fg, hot = (T["primary"], "#FFFFFF", "#1B64DA") if primary else (T["sec"], T["sec_fg"], T["press"])
-    widget = tk.Button(parent, text=text, command=command, font=(FONT, 10, "bold"), bg=face, fg=fg,
+    widget = tk.Button(parent, text=text, command=command, font=font, bg=face, fg=fg,
                        activebackground=hot, activeforeground=fg, relief="flat", bd=0, padx=18, pady=7,
                        cursor="hand2")
     widget.bind("<Enter>", lambda e: widget.configure(bg=hot))
@@ -182,8 +198,9 @@ def button(parent, text, command, primary):
 class Widget:
     pos_file = POS_FILE
     pin_file = PIN_FILE
+    style_file = STYLE_FILE
     size = ""
-    min_size = (220, 150)
+    min_size = (240, 170)
 
     def default_pos(self):
         return self.root.winfo_screenwidth() - 320, self.root.winfo_screenheight() - 520
@@ -193,7 +210,8 @@ class Widget:
         self.root = tk.Tk()
         FONT = pick_font()
         self.root.overrideredirect(True)
-        self.root.attributes("-alpha", 0.95)
+        self.alpha, self.offset = parse_style(self.style_file.read_text()) if self.style_file.exists() else DEFAULT_STYLE
+        self.root.attributes("-alpha", self.alpha)
         self.root.configure(bg=T["bg"])
         self.texts = []
         self.status = ""
@@ -202,10 +220,21 @@ class Widget:
         self.body = tk.Frame(self.root, bg=T["bg"], padx=12, pady=12)
         self.body.pack(fill="both", expand=True)
         self.menu = tk.Menu(self.root, tearoff=0, bg=T["card"], fg=T["fg"], activebackground=T["sec"],
-                            activeforeground=T["fg"], selectcolor=T["primary"], font=(FONT, 10), bd=0)
+                            activeforeground=T["fg"], selectcolor=T["primary"], font=(FONT, 11), bd=0)
         self.menu.add_command(label="캘린더 주소 설정…", command=self.open_settings)
         self.pinned = tk.BooleanVar(value=self.pin_file.exists() and self.pin_file.read_text().strip() == "1")
         self.menu.add_checkbutton(label="바탕화면에 고정", variable=self.pinned, command=self.toggle_pin)
+        self.alpha_var = tk.DoubleVar(value=self.alpha)
+        self.offset_var = tk.IntVar(value=self.offset)
+        alpha_menu = tk.Menu(self.menu, tearoff=0)
+        for a in ALPHAS:
+            alpha_menu.add_radiobutton(label=f"{round(a * 100)}%", variable=self.alpha_var, value=a,
+                                       command=self.set_style)
+        size_menu = tk.Menu(self.menu, tearoff=0)
+        for name, offset in FONT_SIZES:
+            size_menu.add_radiobutton(label=name, variable=self.offset_var, value=offset, command=self.set_style)
+        self.menu.add_cascade(label="투명도", menu=alpha_menu)
+        self.menu.add_cascade(label="글씨 크기", menu=size_menu)
         self.menu.add_command(label="지금 새로고침", command=self.refresh_now)
         self.menu.add_command(label="구글 캘린더 열기", command=lambda: webbrowser.open("https://calendar.google.com"))
         self.menu.add_command(label="종료", command=self.root.destroy)
@@ -222,9 +251,21 @@ class Widget:
         self.root.geometry(geometry)
         round_window(self.root)
         self.resizing = None
-        self.grip = tk.Label(self.root, text="◢", bg=T["bg"], fg=T["muted"], font=(FONT, 10), cursor="size_nw_se")
+        self.press = None  # 누름 없이 떼기만 오면(메뉴·팝업 닫은 직후) None
+        self.grip = tk.Label(self.root, text="◢", bg=T["bg"], fg=T["muted"], font=self.font(11), cursor="size_nw_se")
         self.show_grip()
         self.root.bind("<FocusIn>", lambda e: self.keep_pinned())
+
+    def font(self, size, weight="normal"):
+        """글씨 크기 메뉴의 더하기 값을 반영한 폰트 튜플."""
+        return (FONT, size + self.offset, weight)
+
+    def set_style(self):
+        self.alpha, self.offset = self.alpha_var.get(), self.offset_var.get()
+        self.style_file.write_text(f"{self.alpha} {self.offset}")
+        self.root.attributes("-alpha", self.alpha)
+        self.grip.configure(font=self.font(11))
+        self.render()
 
     def toggle_pin(self):
         self.pin_file.write_text("1" if self.pinned.get() else "0")
@@ -253,29 +294,30 @@ class Widget:
         if self.in_dialog(e):
             return
         self.press = (e.x_root, e.y_root)
-        self.offset = (e.x_root - self.root.winfo_x(), e.y_root - self.root.winfo_y())
+        self.drag_offset = (e.x_root - self.root.winfo_x(), e.y_root - self.root.winfo_y())
         if e.widget is self.grip:
             self.resizing = (self.root.winfo_width(), self.root.winfo_height())
 
     def drag_move(self, e):
-        if self.in_dialog(e) or self.pinned.get():
+        if self.press is None or self.in_dialog(e) or self.pinned.get():
             return
         if self.resizing:
             w = max(self.resizing[0] + e.x_root - self.press[0], self.min_size[0])
             h = max(self.resizing[1] + e.y_root - self.press[1], self.min_size[1])
             self.root.geometry(f"{w}x{h}")
             return
-        self.root.geometry(f"+{e.x_root - self.offset[0]}+{e.y_root - self.offset[1]}")
+        self.root.geometry(f"+{e.x_root - self.drag_offset[0]}+{e.y_root - self.drag_offset[1]}")
 
     def drag_end(self, e):
-        if self.in_dialog(e):
+        press, self.press = self.press, None
+        if press is None or self.in_dialog(e):
             return
         if self.resizing:
             self.resizing = None
             self.size = f"{self.root.winfo_width()}x{self.root.winfo_height()}"
             self.render()
         self.pos_file.write_text(f"{self.size}+{self.root.winfo_x()}+{self.root.winfo_y()}")
-        moved = abs(e.x_root - self.press[0]) + abs(e.y_root - self.press[1])
+        moved = abs(e.x_root - press[0]) + abs(e.y_root - press[1])
         if moved < 5 and e.widget is self.hint:
             self.open_settings()
 
@@ -293,18 +335,18 @@ class Widget:
                  "\"iCal 형식의 비공개 주소\"를 복사해 붙여 넣어 주세요.\n"
                  "캘린더가 여러 개면 한 줄에 주소 하나씩 넣으면 됩니다.")
         tk.Label(self.dialog, text="캘린더 주소 설정", bg=T["card"], fg=T["fg"],
-                 font=(FONT, 14, "bold")).pack(anchor="w", padx=12, pady=(12, 4))
-        tk.Label(self.dialog, text=guide, bg=T["card"], fg=T["muted"], font=(FONT, 10),
+                 font=self.font(16, "bold")).pack(anchor="w", padx=12, pady=(12, 4))
+        tk.Label(self.dialog, text=guide, bg=T["card"], fg=T["muted"], font=self.font(11),
                  justify="left").pack(anchor="w", padx=12, pady=(0, 10))
-        self.url_box = tk.Text(self.dialog, width=70, height=6, font=(FONT, 9), bg=T["sec"], fg=T["fg"],
+        self.url_box = tk.Text(self.dialog, width=70, height=6, font=self.font(10), bg=T["sec"], fg=T["fg"],
                                insertbackground=T["fg"], selectbackground=T["primary"], relief="flat", bd=0,
                                highlightthickness=0, padx=10, pady=8)
         self.url_box.pack(fill="both", expand=True, padx=12)
         self.url_box.insert("1.0", "\n".join(read_urls()))
         buttons = tk.Frame(self.dialog, bg=T["card"])
         buttons.pack(anchor="e", padx=12, pady=12)
-        button(buttons, "취소", self.close_settings, False).pack(side="left", padx=(0, 6))
-        button(buttons, "저장", self.save_settings, True).pack(side="left")
+        button(buttons, "취소", self.close_settings, False, self.font(11, "bold")).pack(side="left", padx=(0, 6))
+        button(buttons, "저장", self.save_settings, True, self.font(11, "bold")).pack(side="left")
         self.dialog.focus_force()
         self.url_box.focus_set()
 
@@ -322,9 +364,9 @@ class Widget:
         self.dialog.destroy()
         self.dialog = None
 
-    def label(self, text, size=10, color=None, bold=False, pady=0):
-        weight = "bold" if bold else "normal"
-        widget = tk.Label(self.body, text=text, bg=T["bg"], fg=color or T["fg"], font=(FONT, size, weight),
+    def label(self, text, size=12, color=None, bold=False, pady=0):
+        widget = tk.Label(self.body, text=text, bg=T["bg"], fg=color or T["fg"],
+                          font=self.font(size, "bold" if bold else "normal"),
                           anchor="w", justify="left", wraplength=self.wrap(), bd=0)
         widget.pack(fill="x", pady=(pady, 0))
         return widget
@@ -333,7 +375,7 @@ class Widget:
         return T["red"] if self.status.startswith("갱신 실패") else T["muted"]
 
     def wrap(self):
-        return max(int(self.size.split("x")[0]) - 40, 100) if self.size else 260
+        return max(int(self.size.split("x")[0]) - 40, 100) if self.size else 280
 
     def render(self):
         for child in self.body.winfo_children():
@@ -345,7 +387,7 @@ class Widget:
         groups = group_events(self.texts, now)
         if not groups:
             self.label("7일간 일정 없음", color=T["muted"])
-        time_font = tkfont.Font(font=(FONT, 9))
+        time_font = tkfont.Font(font=self.font(11))
         time_w = time_font.measure("00:00") + 12
         title_w = max(self.wrap() - 28 - time_w, 80)
         for d, items in groups:
@@ -355,10 +397,10 @@ class Widget:
             box.columnconfigure(1, weight=1)
             head = tk.Frame(box, bg=T["card"])
             head.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
-            tk.Label(head, text=day_label(d, None), bg=T["card"], fg=T["fg"], font=(FONT, 11, "bold"),
+            tk.Label(head, text=day_label(d, None), bg=T["card"], fg=T["fg"], font=self.font(13, "bold"),
                      bd=0).pack(side="left")
             if d == now.date():
-                badge = tk.Label(head, text="오늘", bg=T["tint"], fg=T["tint_fg"], font=(FONT, 8, "bold"),
+                badge = tk.Label(head, text="오늘", bg=T["tint"], fg=T["tint_fg"], font=self.font(10, "bold"),
                                  bd=0, padx=7, pady=1)
                 badge.pack(side="left", padx=(6, 0))
                 round_corners(badge, 4, T["card"])
@@ -366,10 +408,10 @@ class Widget:
                 color = T["muted"] if item["past"] else T["fg"]
                 tk.Label(box, text=item["time"], bg=T["card"], fg=T["muted"], font=time_font,
                          bd=0, anchor="w").grid(row=row, column=0, sticky="nw", pady=2)
-                tk.Label(box, text=item["title"], bg=T["card"], fg=color, font=(FONT, 10), bd=0, anchor="w",
+                tk.Label(box, text=item["title"], bg=T["card"], fg=color, font=self.font(12), bd=0, anchor="w",
                          justify="left", wraplength=title_w).grid(row=row, column=1, sticky="w", pady=2)
             round_corners(box, 12, T["bg"])
-        self.label(self.status, size=8, color=self.status_color(), pady=2)
+        self.label(self.status, size=10, color=self.status_color(), pady=2)
 
     def refresh_now(self):
         urls = read_urls()
@@ -462,6 +504,15 @@ def selftest():
     assert restore_geometry("-1500 -20", "") == "+-1500+-20"
     assert restore_geometry("900x700+-5+10\n", "700x520") == "900x700+-5+10"
     assert restore_geometry("+30+40", "") == "+30+40"
+    assert parse_style("1.0 2\n") == (1.0, 2)
+    assert parse_style("0.95 -2") == (0.95, -2)
+    assert parse_style("0.7 4") == (0.7, 4)
+    assert parse_style("") == DEFAULT_STYLE == (1.0, 0)
+    assert parse_style("abc 2") == DEFAULT_STYLE
+    assert parse_style("0.9") == DEFAULT_STYLE
+    assert parse_style("0.9 1 3") == DEFAULT_STYLE
+    assert parse_style("0.5 0") == DEFAULT_STYLE  # 메뉴에 없는 투명도
+    assert parse_style("1.0 7") == DEFAULT_STYLE  # 메뉴에 없는 크기
     print("OK")
 
 

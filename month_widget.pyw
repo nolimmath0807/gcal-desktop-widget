@@ -39,8 +39,9 @@ def visible_items(cell_h, total, top, line_h):
 class MonthWidget(cw.Widget):
     pos_file = cw.HERE / "month_pos.txt"
     pin_file = cw.HERE / "month_pin.txt"
-    size = "700x520"
-    min_size = (420, 320)
+    style_file = cw.HERE / "month_style.txt"
+    size = "760x580"
+    min_size = (460, 360)
 
     def default_pos(self):
         return 40, 40
@@ -55,10 +56,11 @@ class MonthWidget(cw.Widget):
         return super().in_dialog(e) or (self.popup is not None and str(e.widget).startswith(str(self.popup)))
 
     def drag_end(self, e):
+        press = self.press
         super().drag_end(e)
-        if self.in_dialog(e):
+        if press is None or self.in_dialog(e):
             return
-        moved = abs(e.x_root - self.press[0]) + abs(e.y_root - self.press[1])
+        moved = abs(e.x_root - press[0]) + abs(e.y_root - press[1])
         on_click = getattr(e.widget, "on_click", None)
         if moved < 5 and on_click:
             on_click()
@@ -86,18 +88,18 @@ class MonthWidget(cw.Widget):
         self.popup.title(cw.day_label(d, None))
         self.popup.attributes("-topmost", True)
         self.popup.protocol("WM_DELETE_WINDOW", self.close_day)
-        self.popup.columnconfigure(0, minsize=tkfont.Font(font=(cw.FONT, 9)).measure("00:00") + 12)
-        tk.Label(self.popup, text=cw.day_label(d, None), bg=T["card"], fg=T["fg"], font=(cw.FONT, 13, "bold"),
+        self.popup.columnconfigure(0, minsize=tkfont.Font(font=self.font(11)).measure("00:00") + 12)
+        tk.Label(self.popup, text=cw.day_label(d, None), bg=T["card"], fg=T["fg"], font=self.font(15, "bold"),
                  bd=0, anchor="w").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
         if not items:
-            tk.Label(self.popup, text="일정 없음", bg=T["card"], fg=T["muted"], font=(cw.FONT, 10),
+            tk.Label(self.popup, text="일정 없음", bg=T["card"], fg=T["muted"], font=self.font(12),
                      bd=0).grid(row=1, column=0, columnspan=2, sticky="w")
         for row, item in enumerate(items, start=1):
-            tk.Label(self.popup, text=item["time"], bg=T["card"], fg=T["muted"], font=(cw.FONT, 9),
+            tk.Label(self.popup, text=item["time"], bg=T["card"], fg=T["muted"], font=self.font(11),
                      bd=0).grid(row=row, column=0, sticky="nw", pady=2)
             tk.Label(self.popup, text=item["title"], bg=T["card"], fg=T["muted"] if item["past"] else T["fg"],
-                     font=(cw.FONT, 10), bd=0, anchor="w", justify="left",
-                     wraplength=320).grid(row=row, column=1, sticky="w", pady=2)
+                     font=self.font(12), bd=0, anchor="w", justify="left",
+                     wraplength=360).grid(row=row, column=1, sticky="w", pady=2)
         self.popup.geometry(f"+{self.root.winfo_pointerx() + 10}+{self.root.winfo_pointery() + 10}")
 
     def close_day(self):
@@ -106,7 +108,7 @@ class MonthWidget(cw.Widget):
 
     def nav_button(self, parent, text, action):
         T = cw.T
-        widget = self.clickable(tk.Label(parent, text=text, bg=T["card"], fg=T["sec_fg"], font=(cw.FONT, 9),
+        widget = self.clickable(tk.Label(parent, text=text, bg=T["card"], fg=T["sec_fg"], font=self.font(10),
                                          bd=0, padx=9, pady=3, cursor="hand2"), action)
         widget.pack(side="right", padx=(4, 0))
         cw.round_corners(widget, 6, T["bg"])
@@ -127,11 +129,11 @@ class MonthWidget(cw.Widget):
         head = tk.Frame(self.body, bg=T["bg"])
         head.pack(fill="x", padx=2)
         title = self.clickable(tk.Label(head, text=f"{self.year}년 {self.month}월", bg=T["bg"], fg=T["fg"],
-                                        font=(cw.FONT, 17, "bold"), bd=0, cursor="hand2"), self.go_today)
+                                        font=self.font(20, "bold"), bd=0, cursor="hand2"), self.go_today)
         title.pack(side="left")
         self.nav_button(head, "▶", lambda: self.shift(1))
         self.nav_button(head, "◀", lambda: self.shift(-1))
-        tk.Label(head, text=self.status, bg=T["bg"], fg=self.status_color(), font=(cw.FONT, 8),
+        tk.Label(head, text=self.status, bg=T["bg"], fg=self.status_color(), font=self.font(10),
                  bd=0).pack(side="right", padx=(0, 8))
 
         grid = tk.Frame(self.body, bg=T["bg"])
@@ -140,14 +142,18 @@ class MonthWidget(cw.Widget):
         for col, name in enumerate(MONTH_DAYS):
             grid.columnconfigure(col, weight=1, uniform="col")
             day_head = tk.Label(grid, text=name, bg=T["bg"], fg=T["muted"] if col % 6 else colors[col],
-                                font=(cw.FONT, 9), bd=0)
+                                font=self.font(10), bd=0)
             day_head.grid(row=0, column=col, pady=(0, 4))
         # 칸 크기는 창 크기에서 계산한다 (body 여백 24x24, 칸 간격 4x4, 칸 안 여백 12x10)
         width, height = map(int, self.size.split("x"))
         self.cell_w = (width - 24) // 7 - 4 - 12
         self.cell_h = (height - 24 - title.winfo_reqheight() - 8 - day_head.winfo_reqheight() - 4) // len(weeks) - 4 - 10
-        self.item_font = tkfont.Font(font=(cw.FONT, 8))
-        self.top_h = max(tkfont.Font(font=(cw.FONT, 9, "bold")).metrics("linespace"), 20) + 2
+        self.item_font = tkfont.Font(font=self.font(10))
+        # 오늘 원은 보통 크기에서 24px, 날짜 숫자 줄 높이에 비례해 키우고 줄인다 (최소 24px)
+        ratio = (tkfont.Font(font=self.font(10, "bold")).metrics("linespace")
+                 / tkfont.Font(font=(cw.FONT, 10, "bold")).metrics("linespace"))
+        self.dot = max(round(24 * ratio), 24)
+        self.top_h = max(tkfont.Font(font=self.font(11, "bold")).metrics("linespace"), self.dot) + 2
         for row, week in enumerate(weeks, start=1):
             grid.rowconfigure(row, weight=1, uniform="row")
             for col, d in enumerate(week):
@@ -162,13 +168,13 @@ class MonthWidget(cw.Widget):
         frame.grid(row=row, column=col, sticky="nsew", padx=2, pady=2)
         frame.pack_propagate(False)
         if d == today:
-            dot = tk.Canvas(frame, width=20, height=20, bg=T["card"], highlightthickness=0, bd=0)
-            dot.create_oval(0, 0, 19, 19, fill=T["primary"], outline=T["primary"])
-            dot.create_text(10, 10, text=str(d.day), fill="#FFFFFF", font=(cw.FONT, 8, "bold"))
+            dot = tk.Canvas(frame, width=self.dot, height=self.dot, bg=T["card"], highlightthickness=0, bd=0)
+            dot.create_oval(0, 0, self.dot - 1, self.dot - 1, fill=T["primary"], outline=T["primary"])
+            dot.create_text(self.dot // 2, self.dot // 2, text=str(d.day), fill="#FFFFFF", font=self.font(10, "bold"))
             dot.pack(anchor="w", pady=(0, 2))
         else:
             tk.Label(frame, text=str(d.day), bg=T["card"], fg=T["faint"] if dim else color,
-                     font=(cw.FONT, 9, "bold"), bd=0, padx=3, anchor="w").pack(fill="x", pady=(2, 4))
+                     font=self.font(11, "bold"), bd=0, padx=3, anchor="w").pack(fill="x", pady=(2, 4))
         dot_w = self.item_font.measure("● ")
         for item in items[:shown]:
             faded = dim or item["past"]
@@ -181,7 +187,7 @@ class MonthWidget(cw.Widget):
                 continue
             line = tk.Frame(frame, bg=T["card"])
             line.pack(fill="x", pady=(1, 0))
-            tk.Label(line, text="●", bg=T["card"], fg=T["faint"] if faded else T["primary"], font=(cw.FONT, 5),
+            tk.Label(line, text="●", bg=T["card"], fg=T["faint"] if faded else T["primary"], font=self.font(6),
                      bd=0).pack(side="left", padx=(2, 3))
             tk.Label(line, text=short(item, self.cell_w - dot_w, self.item_font.measure), bg=T["card"],
                      fg=T["muted"] if faded else T["fg"], font=self.item_font, bd=0, pady=1,
